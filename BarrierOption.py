@@ -5,8 +5,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-
-
 class BarrierOption():
 
     def __init__(self,option_type,knock_in,up,S,K,B,T,r,sigma,N,M):
@@ -22,7 +20,6 @@ class BarrierOption():
         sigma (float): volatility
         N (int): number of steps
         M (int): number of paths
-        
         """
         self.option_type=option_type
         self.knock_in=knock_in
@@ -36,6 +33,9 @@ class BarrierOption():
         self.N=N
         self.M=M
 
+        assert self.option_type in ["call", "put"], "option_type must be 'call' or 'put'"
+        assert self.B > 0 and self.K > 0 and self.S > 0, "Prices must be positive"
+
     def simulate_paths(self,n_paths):
         dt = self.T / self.N
         path = np.zeros((n_paths, self.N + 1))
@@ -48,55 +48,49 @@ class BarrierOption():
         return path 
     
     def pricing(self):
-        
-        payoff_mean = 0 
+        paths = self.simulate_paths(self.M)
 
-        path = self.simulate_paths(self.M)
-
-        # Détection des barrières
+        # Barrier detection
         if self.up:
-            barrier_hit = (path[:, 1:] >= self.B).any(axis=1)
+            barrier_hit = (paths[:, 1:] >= self.B).any(axis=1)
         else:
-            barrier_hit = (path[:, 1:] <= self.B).any(axis=1)
+            barrier_hit = (paths[:, 1:] <= self.B).any(axis=1)
 
-        # Sélection des trajectoires valides
-        if self.knock_in:
-            valid_paths = barrier_hit
-        else:
-            valid_paths = ~barrier_hit
+        # Filter valid paths based on knock-in/out
+        valid_paths = barrier_hit if self.knock_in else ~barrier_hit
 
-
-        # Calcul des payoffs pour chaque type d'option
+        # Compute payoff for valid paths
         if self.option_type == "call":
-            payoffs_1 = np.maximum(path[valid_paths, -1] - self.K, 0)
+            payoffs = np.maximum(paths[valid_paths, -1] - self.K, 0)
         else:
-            payoffs_1 = np.maximum(self.K - path[valid_paths, -1], 0)
+            payoffs = np.maximum(self.K - paths[valid_paths, -1], 0)
 
-        # On concatène tous les payoffs valides (des 2 chemins)
-        payoff_mean = np.mean(payoffs_1)
+        discounted_price = exp(-self.r * self.T) * np.mean(payoffs)
+        return discounted_price
 
-        # Prix actualisé
-        return exp(-self.r * self.T) * payoff_mean
+    def delta(self,epsilon=0.01):
+        pass
     
 
     def plot_paths(self, n_paths=10):
         plt.figure(figsize=(10, 6))
-
         paths = self.simulate_paths(n_paths)
 
-        # Détection des trajectoires qui touchent la barrière
         if self.up:
             hit_barrier = (paths[:, 1:] >= self.B).any(axis=1)
         else:
             hit_barrier = (paths[:, 1:] <= self.B).any(axis=1)
 
-        # Tracé des trajectoires avec couleurs différentes
-        for i in range(paths.shape[0]):
-            color = "red" if hit_barrier[i] else "blue"
-            label = "Touches barrier" if hit_barrier[i] else "Avoids barrier"
-            plt.plot(paths[i], alpha=0.7, color=color)
+        label_used = {"Active option": False, "Inactive option": False}
 
-        # Affichage de la barrière
+        for i in range(paths.shape[0]):
+            hit = hit_barrier[i]
+            color = "red" if hit else "blue"
+            label = "Active option" if hit else "Inactive option"
+            plt.plot(paths[i], alpha=0.7, color=color,
+                    label=label if not label_used[label] else "")
+            label_used[label] = True
+
         plt.axhline(self.B, color="black", linestyle="--", label=f"Barrier = {self.B}")
         plt.title(f"Simulated Paths - {self.option_type.upper()} {'Knock-In' if self.knock_in else 'Knock-Out'}")
         plt.xlabel("Time Steps")
@@ -106,6 +100,7 @@ class BarrierOption():
         plt.show()
 
 
+
                 
     def summary(self):
         print(f"Option {self.option_type.upper()} - {'Knock-In' if self.knock_in else 'Knock-Out'}")
@@ -113,10 +108,10 @@ class BarrierOption():
         print(f"Up: {self.up}, Maturity: {self.T} years, Vol: {self.sigma}, r: {self.r}")
 
 
-barrier = BarrierOption("call", True, True, 100, 100, 120, 2, 0.04, 0.2, 1000,10)
-barrier.plot_paths(n_paths=15)
-"""price = barrier.pricing()
+barrier = BarrierOption("call", True, True, 100, 100, 120, 2, 0.04, 0.2, 1000,1000)
+barrier.plot_paths(n_paths=100)
+price = barrier.pricing()
 barrier.summary()
 
-print(price)"""
+print(price)
     
