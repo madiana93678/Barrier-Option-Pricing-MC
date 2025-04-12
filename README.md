@@ -93,21 +93,36 @@ M = 1000
 ## Hedging Strategies
 
 ### **1. Normal Delta Hedging Strategy**
-The **Normal Delta Hedging** strategy is a straightforward approach used to replicate the payoff of an option by adjusting the portfolio's delta at each time step. In this strategy:
-- **Delta** is calculated using the **Black-Scholes** formula, which measures the sensitivity of the option price to changes in the underlying asset price.
-- At each time step, the portfolio is rebalanced by buying or selling the underlying asset in order to maintain a position that matches the delta of the option.
-- **Rebalancing occurs at each time step**, ensuring that the portfolio remains dynamically adjusted according to the option's delta.
+The **Normal Delta Hedging** strategy is a classical approach used to replicate the payoff of an option by dynamically adjusting the portfolio's delta at each time step. This strategy involves the following key steps:
 
-This strategy works well for simpler options, but it may not be optimal in the case of **barrier options** due to the **path-dependence** of such options. As the asset price approaches the barrier, the delta can change rapidly, making it harder for the strategy to fully capture the option's behavior. 
+- **Delta Calculation**: Delta is calculated using the **Black-Scholes model**, which estimates how sensitive the option's price is to changes in the underlying asset’s price. For barrier options, the Black-Scholes formula is **adapted** by incorporating the **probability of activation** (for knock-in options) or **probability of deactivation** (for knock-out options).
+
+    - For **knock-in options**, the **probability of activation** is calculated using the **standard Black-Scholes formula**, with an additional adjustment that takes into account the likelihood of the barrier being breached.
+    
+    - For **knock-out options**, the formula is adjusted to account for the **probability of the option remaining inactive** (i.e., the barrier is never breached).
+    
+    The delta is then calculated based on this adapted Black-Scholes model.
+
+- **Portfolio Adjustment**: At each time step, the portfolio is rebalanced to match the **current delta** of the option. This involves buying or selling the underlying asset in order to maintain a position that is consistent with the option’s delta. The goal is to keep the portfolio neutral to small changes in the underlying asset’s price.
+
+- **Rebalancing Frequency**: In this strategy, the portfolio is rebalanced **at each time step**, ensuring that the portfolio always reflects the most current delta.
+
+The main advantage of the **Normal Delta Hedging Strategy** is that it is relatively **simple** and **computationally inexpensive**. However, it may not work well for more complex **path-dependent options** like **barrier options**, because it does not account for the changes in delta that might occur when the asset price is near the barrier or experiences large fluctuations. As a result, it can sometimes lead to large hedging errors.
 
 ### **2. Monte Carlo-based Delta Hedging Strategy**
-The **Monte Carlo-based Delta Hedging Strategy** uses **Monte Carlo simulations** to generate multiple price paths for the underlying asset and dynamically adjust the portfolio in response to those simulated paths. In this strategy:
-- The **delta** is calculated for each price path at every time step using the **Black-Scholes formula**, just like the normal strategy.
-- However, instead of rebalancing the portfolio at fixed intervals, this strategy allows for **dynamic rebalancing** based on the evolution of the price paths. It can adjust more frequently in areas of high volatility or near the barrier, improving the accuracy of the hedge.
-- **Monte Carlo simulation** is used to account for the uncertainty and randomness in the price paths, ensuring that the hedging strategy adapts to multiple potential future scenarios.
+The **Monte Carlo-based Delta Hedging Strategy** is an advanced approach that uses **Monte Carlo simulations** to dynamically adjust the portfolio’s delta in response to multiple simulated future price paths. This strategy involves the following steps:
 
-This strategy is more computationally expensive but provides **better accuracy** by allowing for more flexible and responsive rebalancing. It can be particularly useful in hedging **path-dependent options** like **barrier options**, where the payoff is contingent on the underlying asset’s price reaching certain levels (barriers) at any point in time.
+- **Simulating Price Paths**: The Monte Carlo simulation generates a large number of potential price paths for the underlying asset. These paths are generated using **geometric Brownian motion**, which is the same model used in the Black-Scholes formula, but with randomness introduced to account for uncertainty in the asset price’s future behavior.
 
+- **Delta Calculation at Every Time Step**: At each step along the simulated paths, **delta** is recalculated based on the price of the underlying asset and the time to maturity. The calculation uses the **Black-Scholes adapted formula** for barrier options, which accounts for the **probability of activation** (for knock-in options) or **probability of deactivation** (for knock-out options) in addition to the standard Black-Scholes delta formula.
+
+    - The formula for **delta** is adjusted by the **probability of barrier activation** or **deactivation** depending on whether it's a knock-in or knock-out option.
+
+- **Dynamic Rebalancing**: Unlike the normal strategy, the **Monte Carlo strategy** allows for **more frequent rebalancing** based on the evolution of each simulated path. The portfolio is adjusted continuously at each time step to reflect the current delta. The rebalancing is more flexible and adapts to volatility and asset price movements, especially as the price approaches the barrier.
+
+- **Monte Carlo Simulation**: The main benefit of the Monte Carlo approach is that it allows for a much **more dynamic response** to changes in the price path. By simulating multiple paths, it accounts for the **path-dependence** of barrier options and adjusts the portfolio based on the underlying asset's price trajectory.
+
+While the **Monte Carlo-based Hedging Strategy** is **computationally more expensive** than the normal strategy, it provides **better accuracy** by allowing for more flexible and responsive rebalancing. It can be particularly useful in hedging **path-dependent options** like **barrier options**, where the payoff is contingent on the underlying asset’s price reaching certain levels (barriers) at any point in time.
 
 ## Metrics for Comparison
 
