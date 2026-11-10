@@ -1,109 +1,58 @@
 import numpy as np
-from math import exp, sqrt, log
-from scipy.stats import norm
 
-class MonteCarloHedger:
-    def __init__(self, option):
+from DeltaHedger import DeltaHedger
+
+
+class MonteCarloHedger(DeltaHedger):
+    """
+    Delta hedging with a Monte Carlo delta (no closed-form formula needed).
+
+    At each rebalancing date and for each path whose barrier has not been touched,
+    the option is revalued by simulating `n_sim` sub-paths from S*(1+h) and S*(1-h)
+    with the SAME random numbers (common random numbers), and
+
+        delta = (V(S*(1+h)) - V(S*(1-h))) / (2*h*S)
+
+    The barrier is monitored on the same discrete grid as the main simulation, so
+    this delta targets exactly the contract being hedged. Since S_u = S_t * exp(X_u),
+    a sub-path touches the barrier iff S_t * max(exp(X)) >= B (up barrier), which lets
+    every path share the same simulated sub-paths and keeps the computation vectorised.
+
+    This approach generalises to payoffs without a closed form, at the cost of
+    Monte Carlo noise in the delta.
+    """
+
+    name = "Monte Carlo delta"
+
+    def __init__(self, option, n_sim=500, bump=0.01, seed=None):
         """
-        Initializes the Monte Carlo hedging strategy for the given barrier option with rebalancing at every time step.
-
         Parameters:
-            option (BarrierOption): The barrier option instance.
+            option (BarrierOption): The barrier option to hedge.
+            n_sim (int): Number of sub-paths used for each delta estimate.
+            bump (float): Relative spot bump (larger than for the analytical delta,
+                          because the barrier indicator makes the MC price non-smooth).
+            seed (int): Seed for reproducibility.
         """
-        self.option = option
+        super().__init__(option, bump=bump)
+        self.n_sim = n_sim
+        self.rng = np.random.default_rng(seed)
 
-    def compute_delta(self, S, tau):
-        """ 
-        Compute the delta of a barrier option using the Black-Scholes model.
+    def barrier_delta(self, S, tau, t):
+        opt = self.option
+        steps = opt.N - t                               # remaining monitoring dates
+        Z = self.rng.standard_normal((self.n_sim, steps))
+        X = np.cumsum((opt.r - 0.5 * opt.sigma ** 2) * opt.dt
+                      + opt.sigma * np.sqrt(opt.dt) * Z, axis=1)
+        X_T = X[:, -1]
+        X_ext = X.max(axis=1) if opt.up else X.min(axis=1)
+        disc = np.exp(-opt.r * steps * opt.dt)
 
-        Parameters:
-            S (np.ndarray): Spot prices at all paths (M x N).
-            tau (np.ndarray): Time to maturity for each time step (N x 1).
-        
-        Returns:
-            np.ndarray: Vectorized delta for all paths and time steps (M x N).
-        """
-        S = np.maximum(S, 1e-10)
-        tau = np.maximum(tau, 1e-10)
+        def value(spot):
+            spot = spot[:, None]                        # (paths, 1) x (1, n_sim)
+            touched = opt.hit(spot * np.exp(X_ext)[None, :])
+            alive = touched if opt.knock_in else ~touched
+            payoff = opt.vanilla_payoff(spot * np.exp(X_T)[None, :])
+            return disc * (payoff * alive).mean(axis=1)
 
-        d1 = (np.log(S / self.option.K) + (self.option.r + 0.5 * self.option.sigma ** 2) * tau) / (self.option.sigma * np.sqrt(tau))
-        delta_vanilla = norm.cdf(d1) if self.option.option_type == "call" else norm.cdf(d1) - 1
-
-        # Probability of barrier activation for each path
-        d2 = d1 - self.option.sigma * np.sqrt(tau)
-        P_activation = norm.cdf(d2)
-
-        # Adjust delta based on knock-in or knock-out, vectorized
-        if self.option.knock_in:
-            return delta_vanilla * P_activation
-        else:
-            return delta_vanilla * (1 - P_activation)
-
-    def compute_hedging_error(self, paths):
-        """
-        Monte Carlo-based computation of hedging errors for all paths, dynamically adjusting the portfolio.
-
-        Parameters:
-            paths (np.ndarray): Simulated asset price paths (M x N).
-
-        Returns:
-            np.ndarray: Hedging errors for each path (M).
-        """
-        dt = self.option.dt
-        T = self.option.T
-        r = self.option.r
-        N = self.option.N
-        K = self.option.K
-        option_type = self.option.option_type
-
-        # Calculate time to maturity for each time step (vectorized)
-        tau = T - np.arange(N) * dt
-
-        # Precompute the compounding factor for cash (constant across paths)
-        exp_rdt = np.exp(r * dt)
-        
-        # Initialize portfolios (cash and stock positions)
-        cash = np.zeros(self.option.M)
-        stock_position = np.zeros(self.option.M)
-
-        # Loop over each time step to dynamically adjust the portfolio
-        for t in range(N):
-            # Calculate delta for all paths at once
-            delta = self.compute_delta(paths[:, t], tau[t])
-
-            # Rebalance the portfolio at every time step
-            cash *= exp_rdt  # Apply interest to the cash balance
-            cash -= (delta - stock_position) * paths[:, t]  # Rebalance the stock position
-            stock_position = delta  # Update stock position
-
-        # Compute final payoff for all paths (vectorized)
-        final_price = paths[:, -1]
-        if option_type == 'call':
-            payoff = np.maximum(final_price - K, 0)
-        else:
-            payoff = np.maximum(K - final_price, 0)
-
-        # Hedging error (portfolio value vs option payoff)
-        return (stock_position * final_price + cash) - payoff
-
-    def run_hedging(self):
-        """
-        Run Monte Carlo-based delta hedging for multiple simulated paths and compute the errors.
-
-        Returns:
-            np.ndarray: Array of hedging errors for each simulated path.
-        """
-        paths = self.option.simulate_paths()
-        errors = self.compute_hedging_error(paths)
-        return errors
-
-    def plot_hedging_errors(self, errors):
-        """ Plot the distribution of hedging errors. """
-        import matplotlib.pyplot as plt
-        plt.figure(figsize=(10, 6))
-        plt.hist(errors, bins=50, edgecolor='black', alpha=0.7)
-        plt.title("Hedging Error Distribution for Barrier Option (Monte Carlo with Rebalancing at Every Step)")
-        plt.xlabel("Hedging Error")
-        plt.ylabel("Frequency")
-        plt.grid(True)
-        plt.show()
+        h = self.bump * S
+        return (value(S + h) - value(S - h)) / (2 * h)

@@ -1,12 +1,16 @@
+
 import matplotlib.pyplot as plt
-from utils import compute_metrics
+import numpy as np
+
 from BarrierOption import BarrierOption
 from DeltaHedger import DeltaHedger
 from MonteCarloHedger import MonteCarloHedger
+from VanillaDeltaHedger import VanillaDeltaHedger
+from utils import compute_metrics
 
 if __name__ == "__main__":
-    # Define option parameters
-    option_type = 'call'
+    # ------------------------------------------------------------ parameters
+    option_type = "call"
     knock_in = True
     up = True
     S = 100
@@ -15,52 +19,48 @@ if __name__ == "__main__":
     T = 1
     r = 0.05
     sigma = 0.2
-    N = 100
-    M = 10000
+    N = 100      # monitoring / rebalancing dates
+    M = 10000    # simulated paths
+    SEED = 42
 
-    # Create the barrier option instance
-    barrier_option = BarrierOption(option_type, knock_in, up, S, K, B, T, r, sigma, N, M)
+    option = BarrierOption(option_type, knock_in, up, S, K, B, T, r, sigma, N, M)
 
-    # Create a Monte Carlo hedger for the option with rebalancing at every step
-    monte_carlo_hedger = MonteCarloHedger(barrier_option)
+    # --------------------------------------------------------------- pricing
+    paths = option.simulate_paths(seed=SEED)   # same paths for every strategy
+    mc_price, mc_se = option.pricing(paths)
+    cf_price = float(option.analytical_price())
+    cf_cont = float(option.analytical_price(discrete=False))
 
-    # Create a normal hedger for the option with rebalancing at every step
-    normal_hedger = DeltaHedger(barrier_option)
+    print("Pricing")
+    print(f"  Monte Carlo (discrete barrier) : {mc_price:.4f}  (s.e. {mc_se:.4f})")
+    print(f"  Closed form + BGK correction   : {cf_price:.4f}")
+    print(f"  Closed form, continuous barrier: {cf_cont:.4f}")
 
-    # Run hedging for normal strategy and plot results
-    normal_errors = normal_hedger.run_hedging()
+    # --------------------------------------------------------------- hedging
+    # The option is sold at its closed-form price; every strategy is run on the same paths.
+    hedgers = [
+        VanillaDeltaHedger(option),
+        DeltaHedger(option),
+        MonteCarloHedger(option, n_sim=500, seed=SEED),
+    ]
+    errors = {h.name: h.run_hedging(paths, premium=cf_price) for h in hedgers}
 
-    # Run hedging for Monte Carlo strategy and plot results
-    monte_carlo_errors = monte_carlo_hedger.run_hedging()
+    for name, e in errors.items():
+        compute_metrics(e, label=f"Hedging errors - {name}")
 
-    # Calculate and print metrics for Normal Strategy
-    print("\nMetrics for Normal Strategy:")
-    normal_metrics = compute_metrics(normal_errors)
+    # ----------------------------------------------------------------- plots
+    lo = min(np.quantile(e, 0.005) for e in errors.values())
+    hi = max(np.quantile(e, 0.995) for e in errors.values())
+    bins = np.linspace(lo, hi, 60)
 
-    # Calculate and print metrics for Monte Carlo Strategy
-    print("\nMetrics for Monte Carlo Strategy:")
-    monte_carlo_metrics = compute_metrics(monte_carlo_errors)
-
-
-    # Create subplots to show the error distributions side-by-side
-    plt.figure(figsize=(14, 6))
-
-    # Normal strategy hedging errors plot
-    plt.subplot(1, 2, 1)  # 1 row, 2 columns, first subplot
-    plt.hist(normal_errors, bins=50, edgecolor='black', alpha=0.7)
-    plt.title("Hedging Error Distribution for Barrier Option (Normal Strategy)")
-    plt.xlabel("Hedging Error")
-    plt.ylabel("Frequency")
-    plt.grid(True)
-
-    # Monte Carlo strategy hedging errors plot
-    plt.subplot(1, 2, 2)  # 1 row, 2 columns, second subplot
-    plt.hist(monte_carlo_errors, bins=50, edgecolor='black', alpha=0.7)
-    plt.title("Hedging Error Distribution for Barrier Option (Monte Carlo Strategy)")
-    plt.xlabel("Hedging Error")
-    plt.ylabel("Frequency")
-    plt.grid(True)
-
-    # Show all plots in the same window
+    fig, axes = plt.subplots(1, len(errors), figsize=(16, 5), sharex=True, sharey=True)
+    for ax, (name, e) in zip(axes, errors.items()):
+        ax.hist(e, bins=bins, edgecolor="black", alpha=0.7)
+        ax.axvline(0, color="red", linestyle="--")
+        ax.set_title(f"{name}\nmean={e.mean():.3f}, std={e.std():.3f}")
+        ax.set_xlabel("Hedging error at maturity")
+        ax.grid(True)
+    axes[0].set_ylabel("Frequency")
+    plt.suptitle("Up-and-in call: hedging error distribution by strategy")
     plt.tight_layout()
     plt.show()

@@ -1,109 +1,107 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from math import exp, sqrt, log
-from scipy.stats import norm
+
+from BarrierOption import bs_delta
+
 
 class DeltaHedger:
-    def __init__(self, option):
-        """
-        Initializes the delta hedging strategy for the given barrier option.
+    """
+    Discrete delta hedging of a SHORT barrier option, with the analytical barrier delta.
 
+    The hedger sells the option at t=0, receives the premium, and rebalances a
+    position in the underlying at every time step, financing it through a cash
+    account at the risk-free rate. At maturity:
+
+        hedging error = (stock position * S_T + cash) - barrier payoff
+
+    A perfect hedge gives an error of 0 on every path; with discrete rebalancing the
+    errors should be centred on 0 and shrink as N grows.
+
+    Delta used at each date:
+        - barrier not touched yet: delta of the closed-form barrier price
+          (Reiner-Rubinstein + BGK correction), by central finite difference;
+        - barrier already touched: a knock-in has become a vanilla (Black-Scholes delta),
+          a knock-out is dead (delta = 0).
+    Subclasses only override `barrier_delta`.
+    """
+
+    name = "Analytical barrier delta"
+
+    def __init__(self, option, bump=1e-3):
+        """
         Parameters:
-            option (BarrierOption): The barrier option instance.
+            option (BarrierOption): The barrier option to hedge.
+            bump (float): Relative spot bump for the finite-difference delta.
         """
         self.option = option
+        self.bump = bump
 
-    def compute_delta(self, S, tau):
-        """ 
-        Compute the delta of a barrier option, adjusting for barrier activation and gamma hedging.
+    # ------------------------------------------------------------------ deltas
+    def barrier_delta(self, S, tau, t):
+        """Delta of the (not yet touched) barrier option, for an array of spots S."""
+        h = self.bump * S
+        up = self.option.analytical_price(S + h, tau)
+        down = self.option.analytical_price(S - h, tau)
+        return (up - down) / (2 * h)
+
+    def compute_delta(self, S, tau, t, touched):
+        """Delta for every path at date t, given whether the barrier was already touched."""
+        opt = self.option
+        delta = np.zeros_like(S)
+        alive = ~touched
+        if alive.any():
+            delta[alive] = self.barrier_delta(S[alive], tau, t)
+        if touched.any() and opt.knock_in:
+            delta[touched] = bs_delta(opt.option_type, S[touched], opt.K, tau, opt.r, opt.sigma)
+        return delta  # knock-out already touched -> stays 0
+
+    # ----------------------------------------------------------------- hedging
+    def compute_hedging_error(self, paths, premium=None):
+        """
+        Simulates the hedge on each path and returns the hedging errors at maturity.
 
         Parameters:
-            S (np.ndarray): Spot prices at all paths (M x N).
-            tau (np.ndarray): Time to maturity for each time step (N x 1).
-        
-        Returns:
-            np.ndarray: Vectorized delta for all paths and time steps (M x N).
+            paths (np.ndarray): Simulated price paths (M x N+1).
+            premium (float): Price received for the option at t=0.
+                             Defaults to the closed-form price.
         """
-        # Avoid division by zero or invalid values
-        S = np.maximum(S, 1e-10)
-        tau = np.maximum(tau, 1e-10)
+        opt = self.option
+        if premium is None:
+            premium = float(opt.analytical_price())
 
-        # Calculate d1 and d2 for all paths and time steps (vectorized)
-        d1 = (np.log(S / self.option.K) + (self.option.r + 0.5 * self.option.sigma ** 2) * tau) / (self.option.sigma * np.sqrt(tau))
-        d2 = d1 - self.option.sigma * np.sqrt(tau)
+        M, n_cols = paths.shape
+        N = n_cols - 1
+        growth = np.exp(opt.r * opt.dt)
 
-        # Vanilla Black-Scholes delta for each path
-        delta_vanilla = norm.cdf(d1) if self.option.option_type == "call" else norm.cdf(d1) - 1
+        cash = np.full(M, premium)          # premium received at t=0
+        stock = np.zeros(M)
+        touched = np.zeros(M, dtype=bool)
 
-        # Probability of barrier activation for each path
-        P_activation = norm.cdf(d2)
-
-        # Gamma hedging - adjustment to capture curvature near the barrier
-        gamma = norm.pdf(d1) / (S * self.option.sigma * np.sqrt(tau))
-
-        # Adjust delta based on knock-in or knock-out, vectorized
-        if self.option.knock_in:
-            delta_adjusted = delta_vanilla * P_activation + gamma
-        else:
-            delta_adjusted = delta_vanilla * (1 - P_activation) - gamma
-
-        return delta_adjusted
-
-    def compute_hedging_error(self, paths):
-        """ Vectorized computation of hedging errors for all paths. """
-        dt = self.option.dt
-        T = self.option.T
-        r = self.option.r
-        N = self.option.N
-        K = self.option.K
-        option_type = self.option.option_type
-
-        # Calculate time to maturity for each time step (vectorized)
-        tau = T - np.arange(N) * dt
-
-        # Precompute the compounding factor for cash (constant across paths)
-        exp_rdt = np.exp(r * dt)
-        
-        # Initialize portfolios
-        cash = np.zeros(self.option.M)
-        stock_position = np.zeros(self.option.M)
-
-        # Loop over each time step to update portfolios
         for t in range(N):
-            # Calculate delta for all paths at once
-            delta = self.compute_delta(paths[:, t], tau[t])
+            S_t = paths[:, t]
+            tau = opt.T - t * opt.dt
+            touched |= opt.hit(S_t)
 
-            # Update cash and stock positions for all paths at once
-            cash *= exp_rdt
-            cash -= (delta - stock_position) * paths[:, t]
-            stock_position = delta
+            if t > 0:
+                cash *= growth              # interest over (t-1, t]
+            delta = self.compute_delta(S_t, tau, t, touched)
+            cash -= (delta - stock) * S_t   # self-financing rebalancing
+            stock = delta
 
-        # Compute final payoff for all paths (vectorized)
-        final_price = paths[:, -1]
-        if option_type == 'call':
-            payoff = np.maximum(final_price - K, 0)
-        else:
-            payoff = np.maximum(K - final_price, 0)
+        cash *= growth                      # interest over the last period
+        portfolio = stock * paths[:, -1] + cash
+        return portfolio - opt.payoff(paths)
 
-        # Hedging error (portfolio value vs option payoff)
-        return (stock_position * final_price + cash) - payoff
-
-    def run_hedging(self):
-        """
-        Run delta hedging for multiple simulated paths and compute the errors.
-
-        Returns:
-            np.ndarray: Array of hedging errors for each simulated path.
-        """
-        paths = self.option.simulate_paths()
-        errors = self.compute_hedging_error(paths)
-        return errors
+    def run_hedging(self, paths=None, premium=None, seed=None):
+        """Runs the hedge on given paths (or freshly simulated ones) and returns the errors."""
+        if paths is None:
+            paths = self.option.simulate_paths(seed=seed)
+        return self.compute_hedging_error(paths, premium)
 
     def plot_hedging_errors(self, errors):
-        """ Plot the distribution of hedging errors. """
         plt.figure(figsize=(10, 6))
-        plt.hist(errors, bins=50, edgecolor='black', alpha=0.7)
-        plt.title("Hedging Error Distribution for Barrier Option")
+        plt.hist(errors, bins=50, edgecolor="black", alpha=0.7)
+        plt.title(f"Hedging Error Distribution - {self.name}")
         plt.xlabel("Hedging Error")
         plt.ylabel("Frequency")
         plt.grid(True)
