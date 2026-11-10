@@ -16,7 +16,7 @@ if __name__ == "__main__":
     r = 0.05
     sigma = 0.2
     N = 100
-    M = 1000
+    M = 10000
 
     # Create the barrier option instance
     barrier_option = BarrierOption(option_type, knock_in, up, S, K, B, T, r, sigma, N, M)
